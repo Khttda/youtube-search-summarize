@@ -1,5 +1,5 @@
-import re
 import streamlit as st
+import re
 from youtube_transcript_api import (
     YouTubeTranscriptApi,
     TranscriptsDisabled,
@@ -8,112 +8,86 @@ from youtube_transcript_api import (
 )
 from youtube_transcript_api.formatters import TextFormatter
 
+# ==========================================
+# 1. CÁC HÀM XỬ LÝ (Logic cũ của bạn)
+# ==========================================
 
 def extract_video_id(url_or_id: str) -> str:
     """
     Nhận vào URL YouTube hoặc video_id, trả về video_id (11 ký tự).
-    Ví dụ:
-      - https://www.youtube.com/watch?v=NXJqHVZJ9lI
-      - https://youtu.be/NXJqHVZJ9lI
-      - NXJqHVZJ9lI
     """
     url_or_id = url_or_id.strip()
-
     # Regex bắt video id trong các dạng URL phổ biến
     m = re.search(r'(?:v=|/)([a-zA-Z0-9_-]{11})', url_or_id)
     if m:
         return m.group(1)
-
-    # Nếu không match regex, giả sử user đưa thẳng video_id
     return url_or_id
 
 
-def get_clean_transcript(url_or_id: str,
-                         languages=('vi', 'en')) -> tuple[str, str]:
+def get_clean_transcript(url_or_id: str, languages=('vi', 'en')) -> tuple[str, str]:
     """
-    Lấy transcript dạng text sạch (không timestamp) cho 1 video.
-    Trả về: (video_id, transcript_text)
+    Lấy transcript dạng text sạch (không timestamp).
     """
     video_id = extract_video_id(url_or_id)
     ytt_api = YouTubeTranscriptApi()
 
     try:
+        # Thử lấy transcript theo thứ tự ngôn ngữ ưu tiên
         fetched = ytt_api.fetch(video_id, languages=list(languages))
-
+        
+        # Format sang text thuần
         formatter = TextFormatter()
         transcript_text = formatter.format_transcript(fetched)
 
         return video_id, transcript_text
 
     except TranscriptsDisabled:
-        raise RuntimeError(
-            f"🚫 Phụ đề bị tắt cho video này (video_id = {video_id})."
-        )
+        raise RuntimeError(f"🚫 Phụ đề bị tắt cho video này ({video_id}).")
     except NoTranscriptFound:
-        raise RuntimeError(
-            f"❌ Không tìm thấy transcript cho video này (video_id = {video_id})."
-        )
+        raise RuntimeError(f"❌ Không tìm thấy transcript ({video_id}).")
     except VideoUnavailable:
-        raise RuntimeError(
-            f"📛 Video không tồn tại hoặc bị chặn (video_id = {video_id})."
-        )
+        raise RuntimeError(f"📛 Video không tồn tại hoặc bị chặn ({video_id}).")
     except Exception as e:
         raise RuntimeError(f"⚠️ Lỗi không xác định: {e}") from e
 
+# ==========================================
+# 2. GIAO DIỆN STREAMLIT
+# ==========================================
 
-# ======================
-# PHẦN GIAO DIỆN STREAMLIT
-# ======================
+st.set_page_config(page_title="YouTube Transcript", page_icon="📝")
 
-st.set_page_config(page_title="YouTube Transcript", page_icon="🎬", layout="wide")
+st.title("📝 Lấy Transcript YouTube")
+st.write("Nhập link YouTube để lấy nội dung văn bản (phụ đề).")
 
-st.title("🎬 YouTube Transcript (Free)")
-st.write("Dán link hoặc video_id YouTube để lấy transcript dạng text.")
+# Input nhận link
+url_input = st.text_input("Link YouTube hoặc Video ID:", placeholder="Ví dụ: https://www.youtube.com/watch?v=...")
 
-url = st.text_input(
-    "Link hoặc video_id YouTube",
-    placeholder="Ví dụ: https://www.youtube.com/watch?v=NXJqHVZJ9lI",
-)
-
-# Cho phép chọn thứ tự ngôn ngữ ưu tiên
-lang_options = st.multiselect(
-    "Ưu tiên ngôn ngữ phụ đề (chọn theo thứ tự):",
-    ["vi", "en"],
-    default=["vi", "en"],
-)
-
-get_btn = st.button("Lấy transcript")
-
-if get_btn:
-    if not url:
-        st.warning("⚠️ Vui lòng nhập link hoặc video_id trước.")
+# Nút bấm thực thi
+if st.button("🚀 Lấy Transcript"):
+    if not url_input:
+        st.warning("Vui lòng nhập đường link trước!")
     else:
-        if not lang_options:
-            st.warning("⚠️ Vui lòng chọn ít nhất một ngôn ngữ.")
-        else:
-            with st.spinner("⏳ Đang lấy transcript..."):
-                try:
-                    video_id, transcript_text = get_clean_transcript(
-                        url,
-                        languages=tuple(lang_options),
-                    )
-
-                    st.success(f"✅ Lấy transcript thành công cho video_id: {video_id}")
-
-                    # Nút tải file .txt
-                    st.download_button(
-                        label="💾 Tải transcript (.txt)",
-                        data=transcript_text,
-                        file_name=f"transcript_{video_id}.txt",
-                        mime="text/plain",
-                    )
-
-                    # Hiện transcript
-                    st.text_area(
-                        "Transcript (có thể copy dán qua chỗ khác)",
-                        value=transcript_text,
-                        height=400,
-                    )
-
-                except RuntimeError as e:
-                    st.error(str(e))
+        try:
+            with st.spinner("Đang tải dữ liệu..."):
+                # Gọi hàm xử lý trực tiếp tại đây (không cần Colab)
+                video_id, text_content = get_clean_transcript(url_input)
+            
+            # Hiển thị kết quả
+            st.success(f"Thành công! Video ID: {video_id}")
+            
+            # Vùng chứa nội dung text (cho phép copy)
+            st.text_area("Nội dung:", value=text_content, height=300)
+            
+            # Nút tải về máy
+            file_name = f"transcript_{video_id}.txt"
+            st.download_button(
+                label="💾 Tải xuống file .txt",
+                data=text_content,
+                file_name=file_name,
+                mime="text/plain"
+            )
+            
+        except RuntimeError as e:
+            st.error(str(e))
+        except Exception as e:
+            st.error(f"Lỗi lạ: {e}")
