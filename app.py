@@ -1,6 +1,5 @@
 import streamlit as st
 from googleapiclient.discovery import build
-# --- Quay lại bản import gốc ---
 from youtube_transcript_api import YouTubeTranscriptApi, NoTranscriptFound
 import google.generativeai as genai
 
@@ -33,7 +32,7 @@ def search_youtube(api_key, query, max_results=5):
 def get_transcript_text(video_id):
     """Lấy transcript (phụ đề) của video."""
     try:
-        # --- Quay lại cách gọi hàm gốc (và chính xác) ---
+        # Đây là code gốc và chính xác
         transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['vi', 'en'])
         
         transcript = " ".join([item['text'] for item in transcript_list])
@@ -42,7 +41,15 @@ def get_transcript_text(video_id):
         st.warning(f"Video (ID: {video_id}) không có phụ đề (transcript). Không thể tóm tắt.")
         return None
     except Exception as e:
-        st.error(f"Lỗi khi lấy transcript: {e}")
+        # --- ĐÂY LÀ PHẦN CẬP NHẬT QUAN TRỌNG ---
+        # Kiểm tra xem lỗi có phải là "Too Many Requests" không
+        if "Too Many Requests" in str(e) or "429" in str(e):
+            st.error("LỖI 429: MÁY CHỦ BỊ TẠM CHẶN")
+            st.error("Máy chủ của ứng dụng (Streamlit Cloud) đã gửi quá nhiều yêu cầu đến YouTube và đang bị tạm thời giới hạn.")
+            st.warning("Đây là điều bình thường với các app miễn phí. Vui lòng đợi vài phút và thử lại.")
+        else:
+            # Báo các lỗi khác (ví dụ: video này bị cấm,...)
+            st.error(f"Lỗi khi lấy transcript: {e}")
         return None
 
 def summarize_text(api_key, text_to_summarize):
@@ -146,6 +153,7 @@ if 'video_to_summarize' in st.session_state:
                     st.session_state['summary'] = summary
                     del st.session_state['video_to_summarize']
         else:
+            # Lỗi đã được xử lý bên trong hàm get_transcript_text
             pass
 
 if 'summary' in st.session_state:
