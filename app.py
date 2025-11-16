@@ -1,36 +1,33 @@
 import streamlit as st
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
-from youtube_transcript_api import YouTubeTranscriptApi, NoTranscriptFound
-import google.generativeai as genai
-
-# Giới hạn độ dài transcript gửi cho Gemini (tránh quá dài)
-MAX_TRANSCRIPT_CHARS = 12000
-
+from google import genai
 
 # ================== FUNCTIONS ==================
 
+
 @st.cache_data(show_spinner=False, ttl=60 * 60)
-def search_youtube(api_key, query, max_results=3):
+def search_youtube(api_key: str, query: str, max_results: int = 3):
     """
-    Tìm kiếm video trên YouTube, được cache 1 tiếng theo (api_key, query, max_results).
+    Tìm kiếm video trên YouTube bằng YouTube Data API v3.
+    Kết quả được cache 1 tiếng để giảm số lần gọi API.
     """
     try:
-        youtube = build('youtube', 'v3', developerKey=api_key)
+        youtube = build("youtube", "v3", developerKey=api_key)
 
         request = youtube.search().list(
-            part='snippet',
+            part="snippet",
             q=query,
-            type='video',
-            maxResults=max_results
+            type="video",
+            maxResults=max_results,
         )
         response = request.execute()
 
         videos = []
-        for item in response.get('items', []):
-            video_id = item['id']['videoId']
-            title = item['snippet']['title']
-            channel = item['snippet']['channelTitle']
+        for item in response.get("items", []):
+            video_id = item["id"]["videoId"]
+            title = item["snippet"]["title"]
+            channel = item["snippet"]["channelTitle"]
             videos.append(
                 {
                     "id": video_id,
@@ -41,12 +38,11 @@ def search_youtube(api_key, query, max_results=3):
         return videos
 
     except HttpError as e:
-        # Bắt riêng lỗi quota / rate limit từ YouTube Data API
-        if e.resp.status == 429:
+        if e.resp.status == 403:
             st.error(
-                "LỖI 429 khi gọi YouTube Data API: IP của server (Streamlit Cloud) "
-                "đang bị giới hạn tạm thời. Hãy thử lại sau vài phút, hoặc "
-                "dùng API Key khác / deploy app ở nơi khác."
+                "Lỗi 403 từ YouTube Data API (có thể do hết quota hoặc cấu hình API Key).\n"
+                "Vào Google Cloud Console kiểm tra lại hạn mức và xem đã bật "
+                "'YouTube Data API v3' chưa."
             )
         else:
             st.error(f"Lỗi khi gọi YouTube Data API: {e}")
@@ -54,79 +50,53 @@ def search_youtube(api_key, query, max_results=3):
     except Exception as e:
         st.error(f"Lỗi khi tìm kiếm YouTube: {e}")
         st.error(
-            "Gợi ý: API Key YouTube đã đúng chưa? "
-            "Bạn đã bật 'YouTube Data API v3' trong Google Cloud Console chưa?"
+            "Gợi ý: kiểm tra lại YouTube API Key, Project, và việc bật "
+            "'YouTube Data API v3' trong Google Cloud."
         )
         return None
 
 
-@st.cache_data(show_spinner=False, ttl=24 * 60 * 60)
-def get_transcript(video_id: str):
+def summarize_youtube_video(gemini_api_key: str, youtube_url: str):
     """
-    Lấy transcript của video, cache 1 ngày theo video_id.
-    Vì youtube-transcript-api không dùng API key, rất dễ bị YouTube chặn (429) trên server free.
+    Gọi Gemini để tóm tắt trực tiếp video YouTube qua URL.
+    Không cần tự lấy transcript, không dùng youtube-transcript-api.
     """
     try:
-        transcript_list = YouTubeTranscriptApi.get_transcript(
-            video_id,
-            languages=["vi", "en"]
+        client = genai.Client(api_key=gemini_api_key)
+
+        # Theo ví dụ chính thức: truyền file_data.file_uri là YouTube URL :contentReference[oaicite:1]{index=1}
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",  # có thể đổi sang model khác nếu bạn muốn
+            contents=[
+                {
+                    "parts": [
+                        {
+                            "text": (
+                                "Hãy tóm tắt video này bằng TIẾNG VIỆT, "
+                                "trình bày dạng các gạch đầu dòng, "
+                                "tập trung vào kiến thức/ý chính và các bước hành động (nếu có)."
+                            )
+                        },
+                        {
+                            "file_data": {
+                                "file_uri": youtube_url
+                            }
+                        },
+                    ]
+                }
+            ],
         )
-        transcript = " ".join([item["text"] for item in transcript_list])
-        return transcript
 
-    except NoTranscriptFound:
-        st.warning(
-            f"Video (ID: {video_id}) không có phụ đề (transcript) "
-            "=> Không thể tóm tắt."
-        )
-        return None
-    except Exception as e:
-        msg = str(e)
-        # Nhận diện lỗi 429 / Too Many Requests từ YouTube
-        if "Too Many Requests" in msg or "429" in msg:
-            st.error(
-                "YouTube đang trả về lỗi 429 (Too Many Requests) khi lấy transcript.\n\n"
-                "- Điều này thường xảy ra với các server free như Streamlit Cloud "
-                "khi có quá nhiều request từ cùng một IP, hoặc IP bị YouTube đánh dấu là 'lạ'.\n"
-                "- Code của bạn không sai, đây là giới hạn từ phía YouTube.\n\n"
-                "Cách khắc phục:\n"
-                "1. Thử lại sau vài phút.\n"
-                "2. Chạy app trên máy local để dùng IP của bạn.\n"
-                "3. Deploy lên VPS riêng / dịch vụ khác để có IP riêng."
-            )
-        else:
-            st.error(f"Lỗi khi lấy transcript: {e}")
-        return None
-
-
-def summarize_text(api_key: str, text_to_summarize: str):
-    """
-    Tóm tắt transcript bằng Gemini.
-    """
-    try:
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel("gemini-1.5-flash")
-
-        # Cắt bớt transcript nếu quá dài
-        if len(text_to_summarize) > MAX_TRANSCRIPT_CHARS:
-            text_to_summarize = text_to_summarize[:MAX_TRANSCRIPT_CHARS]
-
-        prompt = f"""
-        Hãy tóm tắt văn bản sau đây (transcript của một video YouTube) một cách súc tích.
-        - Tập trung vào các ý chính, các khái niệm quan trọng, các bước / quy trình (nếu có).
-        - Trình bày kết quả dưới dạng các gạch đầu dòng rõ ràng.
-        - Nếu video mang tính hướng dẫn, hãy liệt kê các bước theo thứ tự.
-
-        Văn bản:
-        {text_to_summarize}
-        """
-
-        response = model.generate_content(prompt)
-        return response.text
+        # SDK sẽ tự ghép các phần text của response lại
+        return getattr(response, "text", None)
 
     except Exception as e:
-        st.error(f"Lỗi khi tóm tắt bằng Gemini: {e}")
-        st.error("Gợi ý: Gemini API Key đã nhập đúng chưa?")
+        st.error(f"Lỗi khi tóm tắt video với Gemini: {e}")
+        st.error(
+            "Kiểm tra lại Gemini API Key (từ Google AI Studio) "
+            "và đảm bảo key còn hạn mức sử dụng, "
+            "model tên 'gemini-2.0-flash' khả dụng."
+        )
         return None
 
 
@@ -137,70 +107,86 @@ st.title("🚀 Trình Tóm Tắt Video YouTube")
 
 st.markdown(
     """
-Chào mừng! Ứng dụng này giúp bạn:
+Ứng dụng này giúp bạn:
 
-1. 🔍 Tìm kiếm video trên YouTube.  
+1. 🔍 Tìm kiếm video trên YouTube bằng từ khóa.  
 2. 🎯 Chọn 1 video từ kết quả.  
-3. 🧠 Đọc transcript (phụ đề) và tóm tắt nội dung chính bằng AI (Gemini).
+3. 🧠 Để Gemini tự đọc video YouTube và tóm tắt nội dung chính bằng tiếng Việt.
+
+YouTube API Key chỉ dùng cho **tìm kiếm video**.  
+Gemini API Key dùng để **tóm tắt nội dung video**.
 """
 )
 
-# ----- SIDEBAR -----
-st.sidebar.header("🔑 API Keys (Bắt buộc)")
-st.sidebar.markdown("Bạn cần cung cấp 2 API Key của riêng bạn để ứng dụng hoạt động.")
+# ----- SIDEBAR: API KEYS -----
+
+st.sidebar.header("🔑 API Keys")
+st.sidebar.markdown("Bạn nên cung cấp cả 2 API Key để dùng đủ tính năng.")
 
 youtube_api_key = st.sidebar.text_input(
-    "1. YouTube Data API Key",
-    type="password"
+    "1. YouTube Data API Key (dùng để TÌM KIẾM)",
+    type="password",
 )
 st.sidebar.markdown(
-    "[Cách lấy YouTube Key (từ Google Cloud)](https://developers.google.com/youtube/v3/getting-started)"
+    "[Cách lấy YouTube Key (Google Cloud)](https://developers.google.com/youtube/v3/getting-started)"
 )
 
 gemini_api_key = st.sidebar.text_input(
-    "2. Gemini API Key",
-    type="password"
+    "2. Gemini API Key (dùng để TÓM TẮT)",
+    type="password",
 )
 st.sidebar.markdown(
-    "[Cách lấy Gemini Key (từ Google AI Studio)](https://aistudio.google.com/app/apikey)"
+    "[Cách lấy Gemini Key (Google AI Studio)](https://aistudio.google.com/app/apikey)"
 )
 
 st.sidebar.info(
-    "Đừng lo, Key của bạn chỉ được dùng trong phiên truy cập này "
-    "và **không được lưu lại**."
+    "Key chỉ được dùng trong phiên làm việc hiện tại và **không được lưu lại**."
 )
 
-# ----- MAIN CONTENT -----
+# ----- MAIN LAYOUT -----
 
-# 1. Tìm kiếm video
-st.header("Bước 1: Tìm kiếm Video")
-search_query = st.text_input(
-    "Nhập từ khóa tìm kiếm (ví dụ: 'Streamlit tutorial'):",
-    key="search_query"
-)
+# 1. Khu vực Tìm kiếm
+st.header("Bước 1: Tìm kiếm Video trên YouTube")
 
-if st.button("Tìm kiếm", key="search_button"):
-    # Xoá tóm tắt cũ (nếu có)
-    if "summary" in st.session_state:
-        del st.session_state["summary"]
+col1, col2 = st.columns([3, 1])
+
+with col1:
+    search_query = st.text_input(
+        "Nhập từ khóa (ví dụ: 'chu kỳ kinh tế', 'Streamlit tutorial')",
+        key="search_query",
+    )
+
+with col2:
+    max_results = st.number_input(
+        "Số video tối đa",
+        min_value=1,
+        max_value=10,
+        value=3,
+        step=1,
+        key="max_results",
+    )
+
+if st.button("🔍 Tìm kiếm", key="search_button"):
+    # Xoá summary cũ nếu có
+    st.session_state.pop("summary", None)
 
     if not youtube_api_key:
-        st.error("Vui lòng nhập YouTube API Key ở thanh bên.")
+        st.error("Vui lòng nhập YouTube Data API Key ở thanh bên (mục 1).")
     elif not search_query:
         st.error("Vui lòng nhập từ khóa tìm kiếm.")
     else:
         with st.spinner("Đang tìm video trên YouTube..."):
-            videos = search_youtube(youtube_api_key, search_query, max_results=3)
+            videos = search_youtube(
+                youtube_api_key, search_query, max_results=int(max_results)
+            )
 
         if videos:
             st.session_state["search_results"] = videos
             st.success(f"Đã tìm thấy {len(videos)} video.")
         else:
-            # Nếu search_youtube trả về None thì lỗi đã được báo ở trong hàm
-            if "search_results" in st.session_state:
-                del st.session_state["search_results"]
+            st.session_state.pop("search_results", None)
 
-# 2. Hiển thị kết quả tìm kiếm
+# 2. Hiển thị kết quả và cho chọn video
 if "search_results" in st.session_state:
     st.markdown("---")
     st.header("Bước 2: Chọn Video để Tóm tắt")
@@ -208,34 +194,33 @@ if "search_results" in st.session_state:
     videos = st.session_state["search_results"]
 
     for video in videos:
-        st.markdown(f"**{video['title']}**  \n(Kênh: *{video['channel']}*)")
-        if st.button(f"📝 Tóm tắt video này", key=f"btn_{video['id']}"):
+        st.markdown(
+            f"**{video['title']}**  \n"
+            f"(Kênh: *{video['channel']}*)"
+        )
+        if st.button("📝 Tóm tắt video này", key=f"btn_{video['id']}"):
             st.session_state["video_to_summarize"] = video
-            if "summary" in st.session_state:
-                del st.session_state["summary"]
+            st.session_state.pop("summary", None)
 
 # 3. Tóm tắt video đã chọn
 if "video_to_summarize" in st.session_state:
     if not gemini_api_key:
-        st.error("Vui lòng nhập Gemini API Key ở thanh bên để tóm tắt.")
+        st.error("Vui lòng nhập Gemini API Key ở thanh bên (mục 2) để tóm tắt.")
     else:
         video = st.session_state["video_to_summarize"]
         video_id = video["id"]
+        youtube_url = f"https://www.youtube.com/watch?v={video_id}"
 
         st.markdown("---")
-        st.header(f"Bước 3: Bản Tóm Tắt (Video: {video['title']})")
+        st.header(f"Bước 3: Tóm Tắt Video\n\n📺 {video['title']}")
+        st.markdown(f"🔗 Link: {youtube_url}")
 
-        with st.spinner("Đang lấy transcript (phụ đề) từ YouTube..."):
-            transcript = get_transcript(video_id)
+        with st.spinner("Gemini đang phân tích video và tóm tắt nội dung..."):
+            summary = summarize_youtube_video(gemini_api_key, youtube_url)
 
-        if transcript:
-            st.success("Đã lấy được transcript!")
-            with st.spinner("AI (Gemini) đang tóm tắt nội dung..."):
-                summary = summarize_text(gemini_api_key, transcript)
-                if summary:
-                    st.session_state["summary"] = summary
-                    # Xoá video đã chọn để tránh tóm tắt lại khi refresh
-                    del st.session_state["video_to_summarize"]
+        if summary:
+            st.session_state["summary"] = summary
+            # Không tự xoá video_to_summarize, để user có thể tóm tắt lại nếu muốn
 
 # 4. Hiển thị kết quả tóm tắt
 if "summary" in st.session_state:
