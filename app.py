@@ -1,7 +1,7 @@
 import streamlit as st
 from googleapiclient.discovery import build
-# --- ĐÃ SỬA DÒNG IMPORT ---
-from youtube_transcript_api import get_transcript, NoTranscriptFound 
+# --- Quay lại bản import gốc ---
+from youtube_transcript_api import YouTubeTranscriptApi, NoTranscriptFound
 import google.generativeai as genai
 
 # --- Chức năng (Functions) ---
@@ -9,20 +9,15 @@ import google.generativeai as genai
 def search_youtube(api_key, query, max_results=5):
     """Tìm kiếm video trên YouTube."""
     try:
-        # Xây dựng service YouTube
         youtube = build('youtube', 'v3', developerKey=api_key)
-        
-        # Tạo yêu cầu tìm kiếm
         request = youtube.search().list(
             part='snippet',
             q=query,
             type='video',
             maxResults=max_results
         )
-        # Thực thi
         response = request.execute()
         
-        # Xử lý kết quả
         videos = []
         for item in response['items']:
             video_id = item['id']['videoId']
@@ -35,15 +30,12 @@ def search_youtube(api_key, query, max_results=5):
         st.error("Gợi ý: API Key của YouTube đã chính xác chưa? Bạn đã bật 'YouTube Data API v3' trong Google Cloud Console chưa?")
         return None
 
-# Tên hàm là 'get_transcript_text' để tránh trùng lặp với tên import
 def get_transcript_text(video_id):
     """Lấy transcript (phụ đề) của video."""
     try:
-        # --- ĐÃ SỬA DÒNG GỌI HÀM ---
-        # Giờ chúng ta gọi thẳng hàm 'get_transcript' đã import
-        transcript_list = get_transcript(video_id, languages=['vi', 'en'])
+        # --- Quay lại cách gọi hàm gốc (và chính xác) ---
+        transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['vi', 'en'])
         
-        # Ghép các đoạn text lại
         transcript = " ".join([item['text'] for item in transcript_list])
         return transcript
     except NoTranscriptFound:
@@ -56,13 +48,8 @@ def get_transcript_text(video_id):
 def summarize_text(api_key, text_to_summarize):
     """Tóm tắt văn bản bằng Gemini."""
     try:
-        # Cấu hình Gemini API Key
         genai.configure(api_key=api_key)
-        
-        # Chọn model (flash nhanh và miễn phí)
         model = genai.GenerativeModel('gemini-1.5-flash')
-        
-        # Tạo prompt tóm tắt
         prompt = f"""Hãy tóm tắt văn bản sau đây (transcript của một video) một cách súc tích.
         Tập trung vào các ý chính, các bước hướng dẫn, hoặc các kết luận quan trọng.
         Trình bày dưới dạng các gạch đầu dòng.
@@ -70,7 +57,6 @@ def summarize_text(api_key, text_to_summarize):
         Văn bản:
         {text_to_summarize}
         """
-        
         response = model.generate_content(prompt)
         return response.text
     except Exception as e:
@@ -92,9 +78,7 @@ Chào mừng! Ứng dụng này giúp bạn:
 
 # --- Sidebar (Thanh bên) để nhập Keys ---
 st.sidebar.header("🔑 API Keys (Bắt buộc)")
-st.sidebar.markdown("""
-Bạn cần cung cấp 2 API Key của riêng bạn để ứng dụng hoạt động.
-""")
+st.sidebar.markdown("Bạn cần cung cấp 2 API Key của riêng bạn để ứng dụng hoạt động.")
 
 youtube_api_key = st.sidebar.text_input("1. YouTube Data API Key", type="password")
 st.sidebar.markdown("[Cách lấy YouTube Key (từ Google Cloud)](https://developers.google.com/youtube/v3/getting-started)")
@@ -106,22 +90,18 @@ st.sidebar.info("Đừng lo, Key của bạn chỉ được dùng trong phiên t
 
 # --- Nội dung chính (Main Content) ---
 
-# 1. Khu vực Tìm kiếm
 st.header("Bước 1: Tìm kiếm Video")
 search_query = st.text_input("Nhập từ khóa tìm kiếm (ví dụ: 'Streamlit tutorial'):", key="search_query")
 
 if st.button("Tìm kiếm", key="search_button"):
-    # Xóa kết quả tóm tắt cũ (nếu có)
     if 'summary' in st.session_state:
         del st.session_state['summary']
         
-    # Kiểm tra Key trước khi tìm
     if not youtube_api_key:
         st.error("Vui lòng nhập YouTube API Key ở thanh bên.")
     elif not search_query:
         st.error("Vui lòng nhập từ khóa tìm kiếm.")
     else:
-        # Gọi hàm tìm kiếm
         with st.spinner("Đang tìm video, vui lòng đợi..."):
             videos = search_youtube(youtube_api_key, search_query)
             if videos:
@@ -130,28 +110,21 @@ if st.button("Tìm kiếm", key="search_button"):
             else:
                 st.error("Không tìm thấy video nào hoặc có lỗi xảy ra khi tìm kiếm.")
 
-# 2. Hiển thị Kết quả tìm kiếm
 if 'search_results' in st.session_state:
     st.markdown("---")
     st.header("Bước 2: Chọn Video để Tóm tắt")
     
     videos = st.session_state['search_results']
     
-    # Hiển thị 5 nút. Khi nhấn 1 nút, nó sẽ xử lý tóm tắt
     for i, video in enumerate(videos):
         st.markdown(f"**{video['title']}** (Kênh: *{video['channel']}*)")
         
-        # Khi nhấn nút này, ta sẽ lưu video_id vào session_state để xử lý
         if st.button(f"Tóm tắt Video này", key=f"btn_{video['id']}"):
             st.session_state['video_to_summarize'] = video
-            # Xóa các tóm tắt cũ
             if 'summary' in st.session_state:
                 del st.session_state['summary']
 
-# 3. Xử lý và Hiển thị Tóm tắt
 if 'video_to_summarize' in st.session_state:
-    
-    # Kiểm tra Gemini Key
     if not gemini_api_key:
         st.error("Vui lòng nhập Gemini API Key ở thanh bên để tóm tắt.")
     else:
@@ -161,27 +134,20 @@ if 'video_to_summarize' in st.session_state:
         st.markdown("---")
         st.header(f"Bước 3: Bản Tóm Tắt (Video: {video['title']})")
         
-        # Lấy transcript
         with st.spinner("Đang lấy transcript (phụ đề) của video..."):
-            # Gọi hàm đã được đổi tên
             transcript = get_transcript_text(video_id)
         
         if transcript:
             st.success("Đã lấy được transcript!")
             
-            # Tóm tắt
-            with st.spinner("AI (Gemini) đang tóm tắt nội dung... (việc này có thể mất chút"
-                           " thời gian)"):
+            with st.spinner("AI (Gemini) đang tóm tắt nội dung..."):
                 summary = summarize_text(gemini_api_key, transcript)
                 if summary:
                     st.session_state['summary'] = summary
-                    # Xóa video đã chọn để tránh tóm tắt lại khi trang refresh
                     del st.session_state['video_to_summarize']
         else:
-            # Lỗi (không có transcript) đã được xử lý bên trong hàm get_transcript_text
             pass
 
-# Hiển thị tóm tắt (nếu đã tóm tắt xong)
 if 'summary' in st.session_state:
     st.markdown("---")
     st.subheader("✅ Kết Quả Tóm Tắt")
